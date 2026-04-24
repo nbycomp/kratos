@@ -1,0 +1,128 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batch spans before exporting for efficiency.
+  batch:
+
+  # Classify login spans based on login-related span events.
+  # We classify by event name and strategy marker so that filters can be
+  # mutually exclusive without dropping spans that happen to carry no events.
+  transform/login_classification:
+    error_mode: ignore
+    trace_statements:
+      - context: spanevent
+        statements:
+          - set(span.attributes["kratos.login.outcome"], "successful") where name == "LoginSucceeded" and attributes["SelfServiceStrategyUsed"] == "login"
+          - set(span.attributes["kratos.login.outcome"], "failed_password") where name == "LoginFailed" and attributes["SelfServiceStrategyUsed"] == "login" and attributes["IdentityID"] != nil
+          - set(span.attributes["kratos.login.outcome"], "failed_unknown_identifier") where name == "LoginFailed" and attributes["SelfServiceStrategyUsed"] == "login" and attributes["IdentityID"] == nil
+          - set(span.attributes["kratos.settings.outcome"], "password_changed") where name == "SettingsSucceeded" and attributes["SelfServiceMethodUsed"] == "password" and attributes["IdentityID"] != nil
+
+  # Keep only spans that are a GET request to /self-service/logout.
+  # The filter processor drops spans matching the given OTTL condition, so we
+  # negate the desired predicate to drop everything else.
+  filter/logout_get:
+    error_mode: ignore
+    traces:
+      span:
+        - not (attributes["http.request.method"] == "GET" and attributes["url.path"] == "/self-service/logout")
+
+  # Keep only spans classified as successful login.
+  filter/login_success:
+    error_mode: ignore
+    traces:
+      span:
+        - attributes["kratos.login.outcome"] != "successful"
+
+  # Keep only spans classified as failed login due to incorrect password.
+  filter/login_failed_password:
+    error_mode: ignore
+    traces:
+      span:
+        - attributes["kratos.login.outcome"] != "failed_password"
+
+  # Keep only spans classified as failed login due to unknown identifier.
+  filter/login_failed_unknown_identifier:
+    error_mode: ignore
+    traces:
+      span:
+        - attributes["kratos.login.outcome"] != "failed_unknown_identifier"
+
+  # Keep only spans where settings password update succeeded.
+  filter/settings_password_changed:
+    error_mode: ignore
+    traces:
+      span:
+        - attributes["kratos.settings.outcome"] != "password_changed"
+
+exporters:
+  # Forward all traces to Grafana Tempo for storage and visualisation.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Forward selected trace pipelines to Fluentd over OTLP.
+  otlp/fluentd:
+    endpoint: fluentd:4317
+    tls:
+      insecure: true
+
+  # Print matching logout spans to the collector log so the raw event is
+  # visible without opening the Grafana UI.
+  debug:
+    verbosity: detailed
+
+  # Dedicated debug exporters make each scenario easy to identify in logs.
+  debug/login_success:
+    verbosity: detailed
+  debug/login_failed_password:
+    verbosity: detailed
+  debug/login_failed_unknown_identifier:
+    verbosity: detailed
+  debug/settings_password_changed:
+    verbosity: detailed
+
+service:
+  pipelines:
+    # Primary pipeline: all traces go to Tempo for visualisation.
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
+
+    # Secondary pipeline: only GET /self-service/logout spans are logged.
+    traces/logout_get:
+      receivers: [otlp]
+      processors: [filter/logout_get, batch]
+      exporters: [debug, otlp/fluentd]
+
+    # POST /self-service/login: successful login events.
+    traces/login_post_success:
+      receivers: [otlp]
+      processors: [transform/login_classification, filter/login_success, batch]
+      exporters: [debug/login_success, otlp/fluentd]
+
+    # POST /self-service/login: login failed due to incorrect password.
+    # IdentityID is included on the LoginFailed event.
+    traces/login_post_failed_password:
+      receivers: [otlp]
+      processors: [transform/login_classification, filter/login_failed_password, batch]
+      exporters: [debug/login_failed_password, otlp/fluentd]
+
+    # POST /self-service/login: login failed due to unknown identifier.
+    traces/login_post_failed_unknown_identifier:
+      receivers: [otlp]
+      processors: [transform/login_classification, filter/login_failed_unknown_identifier, batch]
+      exporters: [debug/login_failed_unknown_identifier, otlp/fluentd]
+
+    # POST /self-service/settings: password changed successfully.
+    traces/settings_post_password_changed:
+      receivers: [otlp]
+      processors: [transform/login_classification, filter/settings_password_changed, batch]
+      exporters: [debug/settings_password_changed, otlp/fluentd]
