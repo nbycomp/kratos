@@ -3,9 +3,9 @@ name: nby-ssrf-allowlist
 
 on:
   push:
-    branches: ['allow-ip-ranges*', 'nby-*']
+    branches: ["allow-ip-ranges*", "nby-*"]
   pull_request:
-    branches: ['allow-ip-ranges*']
+    branches: ["allow-ip-ranges*"]
 
 permissions:
   contents: read
