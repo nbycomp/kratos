@@ -1,0 +1,22 @@
+# Guards the SSRF allowlist patch (oryx/ipx/ssrf_nby.go) across rebases onto upstream.
+name: nby-ssrf-allowlist
+
+on:
+  push:
+    branches: ['allow-ip-ranges*', 'nby-*']
+  pull_request:
+    branches: ['allow-ip-ranges*']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: oryx/go.mod
+      - run: go test ./ipx/
+        working-directory: oryx
