@@ -315,6 +315,7 @@ jobs:
             test/e2e/playwright-report/
 
   docs-cli:
+    if: github.repository_owner == 'ory'
     runs-on: ubuntu-latest
     name: Build CLI docs
     needs:
